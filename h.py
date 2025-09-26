@@ -2,38 +2,47 @@ import cv2
 import time
 import numpy as np
 
-CLASSES = [
-    "background",
-    "aeroplane",
-    "bicycle",
-    "bird",
-    "boat",
-    "bottle",
-    "bus",
-    "car",
-    "cat",
-    "chair",
-    "cow",
-    "diningtable",
-    "dog",
-    "horse",
-    "motorbike",
-    "person",
-    "pottedplant",
-    "sheep",
-    "sofa",
-    "train",
-    "tvmonitor",
-]
-net = cv2.dnn.readNetFromCaffe(
-    "MobileNetSSD_deploy.prototxt", "MobileNetSSD_deploy.caffemodel"
-)
+# COCO классы (YOLOv5 обучен на COCO dataset)
+CLASSES = ['person', 'bicycle', 'car', 'motorcycle', 'airplane', 'bus', 'train', 'truck', 
+          'boat', 'traffic light', 'fire hydrant', 'stop sign', 'parking meter', 'bench', 
+          'bird', 'cat', 'dog', 'horse', 'sheep', 'cow', 'elephant', 'bear', 'zebra', 
+          'giraffe', 'backpack', 'umbrella', 'handbag', 'tie', 'suitcase', 'frisbee', 
+          'skis', 'snowboard', 'sports ball', 'kite', 'baseball bat', 'baseball glove', 
+          'skateboard', 'surfboard', 'tennis racket', 'bottle', 'wine glass', 'cup', 
+          'fork', 'knife', 'spoon', 'bowl', 'banana', 'apple', 'sandwich', 'orange', 
+          'broccoli', 'carrot', 'hot dog', 'pizza', 'donut', 'cake', 'chair', 'couch', 
+          'potted plant', 'bed', 'dining table', 'toilet', 'tv', 'laptop', 'mouse', 
+          'remote', 'keyboard', 'cell phone', 'microwave', 'oven', 'toaster', 'sink', 
+          'refrigerator', 'book', 'clock', 'vase', 'scissors', 'teddy bear', 'hair drier', 'toothbrush']
+
+# Загружаем YOLOv5 ONNX модель
+net = cv2.dnn.readNet("yolov5s.onnx")
 
 zones = [
-    [1, 414, 805, 845],    # x1 < x2, y1 < y2
-    [1, 332, 487, 463],   # x1 < x2, y1 < y2
-    [920, 320, 1600, 480] # x1 < x2, y1 < y2
+    [1, 554, 377, 826],  # x1 < x2, y1 < y2
+    [350, 422, 598, 693],  # x1 < x2, y1 < y2
+    [567, 454, 796, 642],
+    [714, 395, 983, 603],
+    [1, 294, 126, 410],
+    [78, 325, 241, 456],
+    [145, 395, 384, 552],
+    [390, 395, 1073, 474],
+    [145, 378, 384, 552],
+    [1075, 366, 1278, 440],
+    [1276, 343, 1441, 404],
+    [966, 490, 1130, 624],
+    [1086, 552, 1276, 672],
+    [1273, 606, 1442, 720],
+    [1402, 662, 1590, 776],
+    [1541, 686, 1829, 818],
 ]
+def is_in_zone(x1, y1, x2, y2, zones):
+    center_x = (x1 + x2) // 2
+    center_y = (y1 + y2) // 2
+    for zx1, zy1, zx2, zy2 in zones:
+        if zx1 <= center_x <= zx2 and zy1 <= center_y <= zy2:
+            return True
+    return False
 
 cap = cv2.VideoCapture("https://cams.is74.ru/live/main/cam1026.m3u8")
 while True:
@@ -41,40 +50,46 @@ while True:
     if not ret:
         break
 
-    blob = cv2.dnn.blobFromImage(frame, 0.007843, (300, 300), 127.5)
+    # YOLOv5 принимает вход 640x640
+    blob = cv2.dnn.blobFromImage(frame, 1/255.0, (640, 640), swapRB=True, crop=False)
     net.setInput(blob)
-    detections = net.forward()
+    outputs = net.forward()
 
-    for (x1, y1, x2, y2) in zones:
-        roi = frame[y1:y2, x1:x2]
-        if roi.size == 0:
-            continue
-        blob = cv2.dnn.blobFromImage(roi, 0.007843, (300, 300), 127.5)
-        net.setInput(blob)
-        detections = net.forward()
-        cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 0, 255), 2)
+    # Парсим результаты YOLOv5
+    for zx1, zy1, zx2, zy2 in zones:
+        cv2.rectangle(frame, (zx1, zy1), (zx2, zy2), (0, 0, 255), 2)
 
-        for i in range(detections.shape[2]):
-            confidence = detections[0, 0, i, 2]
-            if confidence > 0.2:
-                idx = int(detections[0, 0, i, 1])
-                label = CLASSES[idx]
-                # ! только нужные классы:
-                if label not in ["car", "bus", "train"]:
+    for output in outputs:
+        for detection in output:
+            scores = detection[5:]
+            class_id = np.argmax(scores)
+            confidence = scores[class_id]
+            
+            if confidence > 0.5:  # порог уверенности
+                label = CLASSES[class_id]
+                if label not in ["car", "bus", "truck", "motorcycle"]:
                     continue
-                box = detections[0, 0, i, 3:7] * np.array([roi.shape[1], roi.shape[0], roi.shape[1], roi.shape[0]])
-                (rx1, ry1, rx2, ry2) = box.astype("int")
-                cv2.rectangle(frame, (rx1 + x1, ry1 + y1), (rx2 + x1, ry2 + y1), (0, 255, 0), 2)
-                cv2.putText(frame, label, (rx1 + x1, ry1 + y1 - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255,0,0), 2)
+                    
+                center_x = int(detection[0] * frame.shape[1])
+                center_y = int(detection[1] * frame.shape[0])
+                width = int(detection[2] * frame.shape[1])
+                height = int(detection[3] * frame.shape[0])
+                
+                x1 = int(center_x - width/2)
+                y1 = int(center_y - height/2)
+                x2 = int(center_x + width/2)
+                y2 = int(center_y + height/2)
+                
+                if is_in_zone(x1, y1, x2, y2, zones):
+                    cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 255, 0), 2)
+                    cv2.line(frame, (center_x, y1-20), (center_x, y1), (255, 0, 0), 2)
+                    cv2.putText(frame, f"{label} {confidence:.2f}", (x1, y1-25), 
+                               cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255,0,0), 2)
 
-
-    cv2.imshow("Detection", frame)
-
-    time.sleep(0.01)
-
+    cv2.imshow("YOLOv5 Detection", frame)
     if cv2.waitKey(1) & 0xFF == ord("q"):
         break
-
+    time.sleep(0.01)
 
 cap.release()
 cv2.destroyAllWindows()
